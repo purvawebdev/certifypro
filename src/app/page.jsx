@@ -1,5 +1,5 @@
 "use client";
-import CertBatchGenerator from "./components/CertBatchGenerator";
+import CertBatchGenerator from "./components/certGen";
 
 export default function Home() {
   return (

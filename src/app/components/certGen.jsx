@@ -47,38 +47,38 @@ export default function CertBatchGenerator() {
         };
       });
       setRows(normalized);
-      setLogs([]); 
+      setLogs([]);
     };
     if (f.name.endsWith(".csv")) reader.readAsText(f);
     else reader.readAsBinaryString(f);
   };
 
-  // --- PDF GENERATION ---
-  const generatePdfForRow = async (row) => {
-    const { jsPDF } = await import("jspdf");
-    const pdf = new jsPDF({
+  // --- OPTIMIZATION 1: Helper to load image only ONCE ---
+  const loadImgElement = (src) => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  };
+
+  // --- OPTIMIZATION 2: Pass resources as arguments ---
+  // We pass 'jsPDF' class and 'imgElement' so we don't re-import/re-load them 100 times.
+  const generatePdfBlob = (row, jsPDFClass, imgElement, imgType) => {
+    const pdf = new jsPDFClass({
       orientation: "landscape",
       unit: "pt",
       format: "a4",
+      compress: true, // Compress PDF to make upload faster
     });
 
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
 
-    const loadImgEl = (src) =>
-      new Promise((resolve, reject) => {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = src;
-      });
-
-    if (!bgDataUrl) throw new Error("Background not loaded");
-    const imgEl = await loadImgEl(bgDataUrl);
-    const imgType = bgDataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
-
-    pdf.addImage(imgEl, imgType, 0, 0, pageWidth, pageHeight);
+    // Reuse the pre-loaded image element
+    pdf.addImage(imgElement, imgType, 0, 0, pageWidth, pageHeight);
 
     try {
       pdf.setFont(fontName, fontStyle);
@@ -99,27 +99,31 @@ export default function CertBatchGenerator() {
 
     pdf.text(text, finalX, finalY);
 
-    return pdf.output("arraybuffer");
+    // Return Blob directly
+    return pdf.output("blob");
   };
 
-  // --- EXISTING ZIP FUNCTION ---
+  // --- ZIP FUNCTION (Optimized) ---
   const generateAllZip = async () => {
     if (!bgDataUrl) return alert("Upload background template image first");
     if (!rows || rows.length === 0) return alert("Upload Excel file first");
 
     setLoading(true);
     try {
+      // 1. PRE-LOAD RESOURCES ONCE
+      const { jsPDF } = await import("jspdf");
+      const imgEl = await loadImgElement(bgDataUrl);
+      const imgType = bgDataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
+
       const zip = new JSZip();
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        const nameSafe = (row.name || `student_${i + 1}`).replace(/[^\w\s.-]/g, "");
-        try {
-          const ab = await generatePdfForRow(row);
-          zip.file(`${nameSafe}.pdf`, ab);
-        } catch (e) {
-          console.error("pdf gen error for row", row, e);
-        }
-      }
+
+      // Generate files
+      rows.forEach((row) => {
+        const nameSafe = (row.name || `student`).replace(/[^\w\s.-]/g, "");
+        const blob = generatePdfBlob(row, jsPDF, imgEl, imgType);
+        zip.file(`${nameSafe}.pdf`, blob);
+      });
+
       const content = await zip.generateAsync({ type: "blob" });
       saveAs(content, "certificates.zip");
     } catch (err) {
@@ -130,61 +134,75 @@ export default function CertBatchGenerator() {
     }
   };
 
-  // --- NEW EMAIL FUNCTION (Connected to API) ---
+  // --- OPTIMIZED EMAIL FUNCTION (Batch + Retry) ---
   const handleSendEmails = async () => {
     if (!bgDataUrl) return alert("Upload background template image first");
     if (!rows || rows.length === 0) return alert("Upload Excel file first");
 
-    if (!confirm(`Are you sure you want to send emails to ${rows.length} people?`)) return;
+    if (!confirm(`Sending emails to ${rows.length} people. \n⚠️ KEEP THIS TAB OPEN.`)) return;
 
     setLoading(true);
-    setLogs([]); 
+    setLogs([]);
     let successCount = 0;
+    const addLog = (msg) => setLogs((prev) => [msg, ...prev]);
 
-    const addLog = (msg) => setLogs((prev) => [...prev, msg]);
+    // 1. PRE-LOAD RESOURCES (Crucial for speed)
+    const { jsPDF } = await import("jspdf");
+    const imgEl = await loadImgElement(bgDataUrl);
+    const imgType = bgDataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row.email || !row.email.includes("@")) {
-        addLog(`⚠️ Skipped ${row.name}: Invalid email`);
-        continue;
-      }
+    // 2. DEFINE BATCH SIZE (3 is safe for Gmail/Vercel)
+    const BATCH_SIZE = 3;
 
-      try {
-        addLog(`⏳ Processing ${row.name}...`);
+    // Helper function to process one email with retries
+    const processSingleEmail = async (row) => {
+      if (!row.email || !row.email.includes("@")) return;
 
-        const pdfBuffer = await generatePdfForRow(row);
-        const pdfBlob = new Blob([pdfBuffer], { type: "application/pdf" });
+      let attempts = 0;
+      let sent = false;
 
-        const formData = new FormData();
-        formData.append("pdf", pdfBlob, "certificate.pdf");
-        formData.append("email", row.email);
-        formData.append("name", row.name);
+      while (attempts < 2 && !sent) {
+        try {
+          const pdfBlob = generatePdfBlob(row, jsPDF, imgEl, imgType);
+          const formData = new FormData();
+          formData.append("pdf", pdfBlob, "certificate.pdf");
+          formData.append("email", row.email);
+          formData.append("name", row.name);
 
-        const response = await fetch("/api/send-certificate", {
-          method: "POST",
-          body: formData,
-        });
-        
-        const result = await response.json();
+          const response = await fetch("/api/send-certificate", {
+            method: "POST",
+            body: formData,
+          });
 
-        if (response.ok) {
-          successCount++;
-          addLog(`✅ Sent to ${row.email}`);
-        } else {
-          addLog(`❌ Error for ${row.name}: ${result.error}`);
+          if (response.ok) {
+            sent = true;
+            successCount++;
+            addLog(`✅ Sent: ${row.name}`);
+          } else {
+            throw new Error("Server error");
+          }
+        } catch (err) {
+          attempts++;
+          if (attempts < 2) await new Promise(r => setTimeout(r, 1000)); // Wait 1s before retry
+          else addLog(`❌ Failed: ${row.name} (Network Error)`);
         }
-      } catch (e) {
-        console.error(e);
-        addLog(`❌ System error for ${row.name}`);
       }
-      
-      // Delay to respect API limits
-      await new Promise((r) => setTimeout(r, 1000));
+    };
+
+    // 3. RUN BATCH LOOP
+    for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+      const batch = rows.slice(i, i + BATCH_SIZE);
+      addLog(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}...`);
+
+      // Run 3 emails in parallel (Faster!)
+      await Promise.all(batch.map(row => processSingleEmail(row)));
+
+      // Small cooldown to respect Gmail limits
+      await new Promise(r => setTimeout(r, 1000));
     }
 
     setLoading(false);
-    alert(`Batch Complete! Sent ${successCount} emails.`);
+    alert(`Batch Complete! Sent ${successCount}/${rows.length}`);
   };
 
   return (
@@ -229,14 +247,14 @@ export default function CertBatchGenerator() {
       <div className="flex gap-3 mb-4">
         <button onClick={generateAllZip} disabled={loading} className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700">
           {loading ? "Working..." : "Download ZIP (Test)"}
-        </button>
+        </button>a
         <button onClick={handleSendEmails} disabled={loading} className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 font-bold">
           {loading ? "Sending..." : "Generate & Email All"}
         </button>
       </div>
 
       {logs.length > 0 && (
-        <div className="mt-4 p-3 bg-gray-100 rounded text-sm font-mono h-48 overflow-y-auto border">
+        <div className="mt-4 p-3 bg-gray-100 rounded text-sm font-mono h-48 overflow-y-auto border max-h-[300px]">
           {logs.map((log, i) => <div key={i} className="mb-1">{log}</div>)}
         </div>
       )}

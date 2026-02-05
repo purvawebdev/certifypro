@@ -26,17 +26,18 @@ export async function POST(req) {
     const buffer = Buffer.from(bytes);
 
     // --- SEND EMAIL WITH ATTACHMENT ---
+    // --- SEND EMAIL ---
     const mailOptions = {
       from: `"Gryphon Academy" <${process.env.GMAIL_USER}>`,
       to: email,
       subject: `Certificate of Appreciation - Gryphon Academy Training`,
       html: `
-        <div style="font-family: sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #4F46E5;">Certificate of Appreciation - Gryphon Academy Training</h2>
+        <div style="font-family: sans-serif; padding: 0; margin: 0; max-width: 600px;">
+          <h2 style="color: #4F46E5; margin-top: 0;">Certificate of Appreciation - Gryphon Academy Training</h2>
           
-          <p>Dear ${name},</p>
+          <p>Dear <strong>${name}</strong>,</p>
           
-          <p>We are thrilled to present you with your digital certificate in recognition of your successful completion of the training program at Gryphon Academy. This certificate is a testament to your skills and expertise, which you have diligently cultivated during your time with us.</p>
+          <p>We are thrilled to present you with your <strong>digital certificate</strong> in recognition of your successful completion of the training program at <strong>Gryphon Academy</strong>. This certificate is a testament to your skills and expertise, which you have diligently cultivated during your time with us.</p>
           
           <p>We believe that this accomplishment will serve as a stepping stone toward a brighter and more promising future in your chosen field. The skills you've gained will not only open doors to new opportunities but also empower you to stand out in a competitive job market.</p>
           
@@ -59,7 +60,6 @@ export async function POST(req) {
         },
       ],
     };
-
     await transporter.sendMail(mailOptions);
 
     return NextResponse.json({ success: true, message: 'Certificate sent successfully!' });

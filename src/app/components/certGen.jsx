@@ -53,39 +53,36 @@ export default function CertBatchGenerator() {
     else reader.readAsBinaryString(f);
   };
 
-  // --- OPTIMIZATION 1: Helper to load image only ONCE ---
-  const loadImgElement = (src) => {
-    return new Promise((resolve, reject) => {
+  // --- HELPER: Load image once ---
+  const loadImgEl = (src) =>
+    new Promise((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = "anonymous";
       img.onload = () => resolve(img);
       img.onerror = reject;
       img.src = src;
     });
-  };
 
-  // --- OPTIMIZATION 2: Pass resources as arguments ---
-  // We pass 'jsPDF' class and 'imgElement' so we don't re-import/re-load them 100 times.
-  const generatePdfBlob = (row, jsPDFClass, imgElement, imgType) => {
+  // --- PDF GENERATION (Optimized) ---
+  const generatePdfForRow = (row, jsPDFClass, imgEl, imgType) => {
     const pdf = new jsPDFClass({
       orientation: "landscape",
       unit: "pt",
       format: "a4",
-      compress: true, // Compress PDF to make upload faster
+      compress: true, // <--- CRITICAL: Makes upload 3x faster
     });
 
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
 
-    // Reuse the pre-loaded image element
-    pdf.addImage(imgElement, imgType, 0, 0, pageWidth, pageHeight);
+    pdf.addImage(imgEl, imgType, 0, 0, pageWidth, pageHeight);
 
     try {
       pdf.setFont(fontName, fontStyle);
     } catch {
       if (pdf.setFontType) pdf.setFontType(fontStyle || "normal");
     }
-    pdf.setFontSize(Number(fontSize) || 24);
+    pdf.setFontSize(Number(fontSize) || 28);
     pdf.setTextColor(0, 0, 0);
 
     const text = row.name || "N/A";
@@ -99,31 +96,32 @@ export default function CertBatchGenerator() {
 
     pdf.text(text, finalX, finalY);
 
-    // Return Blob directly
-    return pdf.output("blob");
+    return pdf.output("arraybuffer"); // or blob
   };
 
-  // --- ZIP FUNCTION (Optimized) ---
+  // --- ZIP FUNCTION ---
   const generateAllZip = async () => {
     if (!bgDataUrl) return alert("Upload background template image first");
     if (!rows || rows.length === 0) return alert("Upload Excel file first");
 
     setLoading(true);
     try {
-      // 1. PRE-LOAD RESOURCES ONCE
+      // Load resources once
       const { jsPDF } = await import("jspdf");
-      const imgEl = await loadImgElement(bgDataUrl);
+      const imgEl = await loadImgEl(bgDataUrl);
       const imgType = bgDataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
 
       const zip = new JSZip();
-
-      // Generate files
-      rows.forEach((row) => {
-        const nameSafe = (row.name || `student`).replace(/[^\w\s.-]/g, "");
-        const blob = generatePdfBlob(row, jsPDF, imgEl, imgType);
-        zip.file(`${nameSafe}.pdf`, blob);
-      });
-
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const nameSafe = (row.name || `student_${i + 1}`).replace(/[^\w\s.-]/g, "");
+        try {
+          const ab = generatePdfForRow(row, jsPDF, imgEl, imgType);
+          zip.file(`${nameSafe}.pdf`, ab);
+        } catch (e) {
+          console.error("pdf gen error for row", row, e);
+        }
+      }
       const content = await zip.generateAsync({ type: "blob" });
       saveAs(content, "certificates.zip");
     } catch (err) {
@@ -139,37 +137,46 @@ export default function CertBatchGenerator() {
     if (!bgDataUrl) return alert("Upload background template image first");
     if (!rows || rows.length === 0) return alert("Upload Excel file first");
 
-    if (!confirm(`Sending emails to ${rows.length} people. \n⚠️ KEEP THIS TAB OPEN.`)) return;
+    if (!confirm(`Ready to send emails to ${rows.length} students? \n\n⚠️ IMPORTANT: Do not close this tab until finished.`)) return;
 
     setLoading(true);
     setLogs([]);
     let successCount = 0;
     const addLog = (msg) => setLogs((prev) => [msg, ...prev]);
 
-    // 1. PRE-LOAD RESOURCES (Crucial for speed)
+    // 1. Pre-load resources ONCE
     const { jsPDF } = await import("jspdf");
-    const imgEl = await loadImgElement(bgDataUrl);
+    const imgEl = await loadImgEl(bgDataUrl);
     const imgType = bgDataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
 
-    // 2. DEFINE BATCH SIZE (3 is safe for Gmail/Vercel)
-    const BATCH_SIZE = 3;
+    // 2. CONFIG: URL & BATCH SIZE
+    // CHANGE THIS URL to your Production Render URL when deployed
+    // e.g. "https://my-backend.onrender.com/send-certificate"
+    // For local test: "http://localhost:3001/send-certificate"
+    const API_URL = "https://certificate-backend-j2gz.onrender.com";
 
-    // Helper function to process one email with retries
-    const processSingleEmail = async (row) => {
+    const BATCH_SIZE = 5; // Process 5 at a time
+
+    // 3. Helper to process single email
+    const processEmail = async (row) => {
       if (!row.email || !row.email.includes("@")) return;
 
       let attempts = 0;
       let sent = false;
 
-      while (attempts < 2 && !sent) {
+      while (attempts < 3 && !sent) {
         try {
-          const pdfBlob = generatePdfBlob(row, jsPDF, imgEl, imgType);
+          // Generate PDF
+          const pdfBuffer = generatePdfForRow(row, jsPDF, imgEl, imgType);
+          const pdfBlob = new Blob([pdfBuffer], { type: "application/pdf" });
+
           const formData = new FormData();
           formData.append("pdf", pdfBlob, "certificate.pdf");
           formData.append("email", row.email);
           formData.append("name", row.name);
 
-          const response = await fetch("/api/send-certificate", {
+          // Send
+          const response = await fetch(API_URL, {
             method: "POST",
             body: formData,
           });
@@ -177,32 +184,36 @@ export default function CertBatchGenerator() {
           if (response.ok) {
             sent = true;
             successCount++;
-            addLog(`✅ Sent: ${row.name}`);
+            addLog(`✅ Sent: ${row.email}`);
           } else {
-            throw new Error("Server error");
+            throw new Error("Server Error");
           }
         } catch (err) {
           attempts++;
-          if (attempts < 2) await new Promise(r => setTimeout(r, 1000)); // Wait 1s before retry
-          else addLog(`❌ Failed: ${row.name} (Network Error)`);
+          if (attempts < 3) {
+            addLog(`🔄 Retrying ${row.name}...`);
+            await new Promise(r => setTimeout(r, 2000)); // Wait 2s
+          } else {
+            addLog(`❌ Failed ${row.name}: ${err.message}`);
+          }
         }
       }
     };
 
-    // 3. RUN BATCH LOOP
+    // 4. Batch Loop
     for (let i = 0; i < rows.length; i += BATCH_SIZE) {
       const batch = rows.slice(i, i + BATCH_SIZE);
-      addLog(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}...`);
+      addLog(`--- Processing Batch ${Math.floor(i / BATCH_SIZE) + 1} ---`);
 
-      // Run 3 emails in parallel (Faster!)
-      await Promise.all(batch.map(row => processSingleEmail(row)));
+      // Run batch in parallel
+      await Promise.all(batch.map(row => processEmail(row)));
 
-      // Small cooldown to respect Gmail limits
+      // Cooldown to respect rate limits
       await new Promise(r => setTimeout(r, 1000));
     }
 
     setLoading(false);
-    alert(`Batch Complete! Sent ${successCount}/${rows.length}`);
+    alert(`Batch Complete!\nSuccessfully sent: ${successCount} / ${rows.length}`);
   };
 
   return (
@@ -247,7 +258,7 @@ export default function CertBatchGenerator() {
       <div className="flex gap-3 mb-4">
         <button onClick={generateAllZip} disabled={loading} className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700">
           {loading ? "Working..." : "Download ZIP (Test)"}
-        </button>a
+        </button>
         <button onClick={handleSendEmails} disabled={loading} className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 font-bold">
           {loading ? "Sending..." : "Generate & Email All"}
         </button>

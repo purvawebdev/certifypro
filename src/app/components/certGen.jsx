@@ -11,8 +11,8 @@ export default function CertBatchGenerator() {
 
   // --- DEFAULTS FOR A4 (Points) ---
   const [nameX, setNameX] = useState(0);
-  const [nameY, setNameY] = useState(300);
-  const [fontSize, setFontSize] = useState(24);
+  const [nameY, setNameY] = useState(290);
+  const [fontSize, setFontSize] = useState(28);
   const [fontName, setFontName] = useState("times");
   const [fontStyle, setFontStyle] = useState("normal");
   const bgImgRef = useRef(null);

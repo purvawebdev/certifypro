@@ -33,8 +33,6 @@ export async function POST(req) {
       subject: `Certificate of Appreciation - Gryphon Academy Training`,
       html: `
         <div style="font-family: sans-serif; padding: 0; margin: 0; max-width: 600px;">
-          <h2 style="color: #4F46E5; margin-top: 0;">Certificate of Appreciation - Gryphon Academy Training</h2>
-          
           <p>Dear <strong>${name}</strong>,</p>
           
           <p>We are thrilled to present you with your <strong>digital certificate</strong> in recognition of your successful completion of the training program at <strong>Gryphon Academy</strong>. This certificate is a testament to your skills and expertise, which you have diligently cultivated during your time with us.</p>

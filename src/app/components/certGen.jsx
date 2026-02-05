@@ -153,7 +153,7 @@ export default function CertBatchGenerator() {
     // CHANGE THIS URL to your Production Render URL when deployed
     // e.g. "https://my-backend.onrender.com/send-certificate"
     // For local test: "http://localhost:3001/send-certificate"
-    const API_URL = "https://certificate-backend-j2gz.onrender.com";
+    const API_URL = "https://certificate-backend-j2gz.onrender.com/send-certificate";
 
     const BATCH_SIZE = 5; // Process 5 at a time
 
